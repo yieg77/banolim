@@ -1,209 +1,539 @@
-# 필요한 라이브러리 import
-import streamlit as st                    # Streamlit 웹앱 프레임워크
-import pandas as pd                      # 데이터프레임 처리용 pandas
-import requests                          # HTTP 요청을 위한 라이브러리
-import xml.etree.ElementTree as ET       # XML 파싱을 위한 모듈
-from collections import defaultdict       # 중복 키 병합용 defaultdict
-from openpyxl import Workbook             # 엑셀 파일 생성용 openpyxl
-from openpyxl.styles import Font, PatternFill, Border, Side, Alignment  # 스타일 관련 모듈
-from openpyxl.utils import get_column_letter  # 열 너비 계산용
-from io import BytesIO                   # 메모리 내 파일 처리를 위한 모듈
+# ----------------- 라이브러리 임포트 -----------------
+import streamlit as st
+import pandas as pd
+import requests
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from openpyxl import load_workbook
+from openpyxl.styles import Alignment
+from io import BytesIO
+import re
 
-# 앱 제목 출력
-st.title("유해물질 CAS 번호 조회 및 유해성 정보 수집기_0731")
+# ----------------- 고정 유해성 항목 순서 -----------------
+HAZARD_ORDER = [
+    '#', '물질명칭', 'CAS No.', '결과없음',
+    '발암성', '생식독성', '생식세포 변이원성', 'CMR',
+    '급성 독성(경구)', '급성 독성(경피)', '급성 독성(흡입)',
+    '흡인 유해성', '피부 부식성/피부 자극성', '심한 눈 손상성/눈 자극성',
+    '호흡기 과민성', '피부 과민성', '특정표적장기 독성(1회 노출)',
+    '특정표적장기 독성(반복 노출)', '급성 수생환경 유해성', '만성 수생환경 유해성',
+    '폭발성 물질', '자기반응성 물질', '유기과산화물', '산화성 가스',
+    '산화성 액체', '산화성 고체', '인화성 가스', '인화성 에어로졸',
+    '인화성 액체', '인화성 고체', '자연발화성 액체', '자연발화성 고체',
+    '물반응성 물질', '고압가스', '자기발열성 물질', '금속부식성 물질',
+    'TWA', 'STEL', '증기압', '개정일'
+]
 
-# 파일 업로드 컴포넌트
-uploaded_file = st.file_uploader("엑셀 파일을 업로드하세요 (예: data-회사명.xlsx)", type="xlsx")
+# ----------------- CMR 최고 등급 판별 함수 -----------------
+def get_highest_cmr_grade(grades):
+    priority = {'1A': 0, '1B': 1, '2': 2}
+    best = None
+    for g in grades:
+        if g in priority:
+            if best is None or priority[g] < priority[best]:
+                best = g
+    return best
 
-# 사용자가 파일을 업로드한 경우
-if uploaded_file:
-    # 파일 이름에서 회사명 추출 (파일명 형식: data-회사명.xlsx)
-    file_name = uploaded_file.name
-    company_name = file_name.split('-')[-1].split('.')[0]
-
-    # 엑셀 파일의 첫 번째 시트를 읽기 (헤더 없음)
-    df = pd.read_excel(uploaded_file, sheet_name=0, header=None)
-
-    # 유효한(비어 있지 않은) 열만 유지
-    valid_cols = [col for col in df.columns if df[col].notna().sum() > 0]
-    df = df[valid_cols]
-
-    # 첫 번째 행을 헤더로 사용하고 데이터는 그 아래 행부터 사용
-    header_row = df.iloc[0]
-    data_rows = df[1:].copy()
-    data_rows.columns = header_row
-
-    # 열 이름 자동 매핑 (필요한 컬럼 찾기)
-    col_map = {}
-    for col in data_rows.columns:
-        if 'cas' in str(col).lower():
-            col_map['CAS No.'] = col
-        elif '물질' in str(col):
-            col_map['물질명칭'] = col
-        elif '#' in str(col) or '번호' in str(col):
-            col_map['#'] = col
-
-    # 필요한 열만 추출하고 이름 통일
+# ----------------- TWA, STEL 조회 함수 -----------------
+def query_twa_stel(service_key, chem_id):
     try:
-        data_rows = data_rows[[col_map['#'], col_map['물질명칭'], col_map['CAS No.']]].copy()
-        data_rows.columns = ['#', '물질명칭', 'CAS No.']
+        res = requests.get(
+            'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail08',
+            params={'serviceKey': service_key, 'chemId': chem_id},
+            timeout=10
+        )
+        res.encoding = 'utf-8'
+        root = ET.fromstring(res.text)
+
+        twa = ''
+        stel = ''
+
+        for item in root.findall('.//item'):
+            name_twa = item.findtext('msdsItemNameKor')
+            if name_twa == '국내규정':
+                detail = item.findtext('itemDetail')
+                if detail:
+                    parts = [p.strip() for p in detail.split('|') if p.strip()]
+                    for part in parts:
+                        if part.startswith('TWA'):
+                            match = re.search(r'TWA\s*[:]?\s*([\d\.]+\s*ppm(?:\([^)]*\))?)', part)
+                            if match:
+                                twa = match.group(1).strip()
+                        elif part.startswith('STEL'):
+                            match = re.search(r'STEL\s*[:]?\s*([\d\.]+\s*ppm(?:\([^)]*\))?)', part)
+                            if match:
+                                stel = match.group(1).strip()
+
+        return twa, stel
     except:
-        # 필수 열이 없으면 에러 출력 후 중단
-        st.error("필수 열을 찾을 수 없습니다. #, 물질명칭, CAS No. 컬럼이 필요합니다.")
-        st.stop()
+        return '', ''
 
-    # CAS 번호 문자열로 처리하고 공백 제거
-    data_rows['CAS No.'] = data_rows['CAS No.'].astype(str).str.strip()
+# ----------------- 증기압 조회 함수 -----------------
+def query_vapor_pressure(service_key, chem_id):
+    import html
+    
+    try:
+        res = requests.get(
+            'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail09',
+            params={'serviceKey': service_key, 'chemId': chem_id},
+            timeout=10
+        )
+        res.encoding = 'utf-8'
+        root = ET.fromstring(res.text)
 
-    # 공단 인증키 (URL 인코딩된 상태)
-    SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
+        for item in root.findall('.//item'):
+            name = item.findtext('msdsItemNameKor')
+            if name and name.strip() == '증기압':
+                detail = item.findtext('itemDetail')
+                detail = html.unescape(detail)
+                if detail and detail.strip():
+                    cleaned = ''.join(detail.split())  # 공백 제거
+                    # '|' 또는 '※' 이후의 모든 내용을 제거
+                    cleaned = re.split(r'\|+|※+', cleaned)[0]
+                    return cleaned
+    except:
+        pass
+    return ''
 
-    # 결과 저장용 리스트와 컬럼 집합
-    all_results = []
-    all_new_columns = set()
 
-    # 진행률 표시
+# ----------------- 개정일 조회 함수 -----------------
+def query_revision_date(service_key, chem_id):
+    try:
+        res = requests.get(
+            'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail16',
+            params={'serviceKey': service_key, 'chemId': chem_id},
+            timeout=10
+        )
+        res.encoding = 'utf-8'
+        root = ET.fromstring(res.text)
+        for item in root.findall('.//item'):
+            if item.findtext('msdsItemNameKor') == '최종 개정일자':
+                detail = item.findtext('itemDetail')
+                return detail.strip() if detail else ''
+    except:
+        return ''
+    return ''
+
+# ----------------- CAS 정보 조회 함수 -----------------
+def query_cas_info(data_rows, service_key):
+    results = []
+    unknown_columns = set()
     progress = st.progress(0)
 
-    # 각 행에 대해 CAS 번호로 조회 시작
     for idx, row in enumerate(data_rows.itertuples(index=False), start=1):
-        cas = row[2]              # CAS 번호
-        id_num = row[0]           # 순번
-        name = row[1]             # 물질명칭
-        result = {'#': id_num, '물질명칭': name, 'CAS No.': cas}  # 결과 딕셔너리
+        cas = row[2]
+        id_num = row[0]
+        name = row[1]
+        result = {'#': id_num, '물질명칭': name, 'CAS No.': cas}
 
         try:
-            # chemId 조회 API 호출
-            url_id = 'https://msds.kosha.or.kr/openapi/service/msdschem/chemlist'
-            params_id = {'serviceKey': SERVICE_KEY, 'searchWrd': cas, 'searchCnd': 1}
-            res_id = requests.get(url_id, params=params_id, timeout=10)
+            res_id = requests.get(
+                'https://msds.kosha.or.kr/openapi/service/msdschem/chemlist',
+                params={'serviceKey': service_key, 'searchWrd': cas, 'searchCnd': 1},
+                timeout=10
+            )
             res_id.encoding = 'utf-8'
-            root_id = ET.fromstring(res_id.text)
-
-            chem_id = root_id.findtext('.//chemId')  # chemId 추출
+            chem_id = ET.fromstring(res_id.text).findtext('.//chemId')
 
             if not chem_id:
-                # chemId 없으면 결과 없음 처리
                 result['결과없음'] = '공단 MSDS 없음'
-                all_results.append(result)
-                progress.progress(idx / len(data_rows))
-                continue
-
-            # 상세 정보 조회 API 호출
-            url_detail = 'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail02'
-            params_detail = {'serviceKey': SERVICE_KEY, 'chemId': chem_id}
-            res_detail = requests.get(url_detail, params=params_detail, timeout=10)
-            res_detail.encoding = 'utf-8'
-            root_detail = ET.fromstring(res_detail.text)
-
-            # B02 항목 추출 (유해성 정보)
-            b02_detail = None
-            for item in root_detail.findall('.//item'):
-                if item.findtext('msdsItemCode') == 'B02':
-                    b02_detail = item.findtext('itemDetail')
-                    break
-
-            # 유해성 정보가 없거나 "자료없음"이면 결과 없음 처리
-            if b02_detail is None or b02_detail.strip() in ['', '자료없음']:
-                result['결과없음'] = '자료 없음'
             else:
-                # |로 구분된 항목들을 파싱하여 key-value로 병합
-                merged = defaultdict(list)
-                for entry in b02_detail.split('|'):
-                    if ':' in entry and '자료없음' not in entry:
-                        k, v = map(str.strip, entry.rsplit(':', 1))
-                        v = v.replace('구분', '').strip()
-                        if v not in merged[k]:
-                            merged[k].append(v)
+                res_detail = requests.get(
+                    'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail02',
+                    params={'serviceKey': service_key, 'chemId': chem_id},
+                    timeout=10
+                )
+                res_detail.encoding = 'utf-8'
+                root = ET.fromstring(res_detail.text)
 
-                # 결과에 유해성 정보 추가
-                if merged:
+                b02_detail = next(
+                    (item.findtext('itemDetail')
+                     for item in root.findall('.//item')
+                     if item.findtext('msdsItemCode') == 'B02'),
+                    None
+                )
+
+                if b02_detail is None or b02_detail.strip() == '' or b02_detail.strip() == '자료없음':
+                    result['결과없음'] = '자료 없음'
+                else:
+                    merged = defaultdict(list)
+                    inhalation_labels = [
+                        '급성 독성(흡입)', '급성 독성(흡입: 가스)',
+                        '급성 독성(흡입: 분진/미스트)', '급성 독성(흡입: 증기)'
+                    ]
+                    inhalation_entries = []
+                    cmr_map = {'발암성': [], '생식독성': [], '생식세포 변이원성': []}
+
+                    for entry in b02_detail.split('|'):
+                        if ':' in entry and '자료없음' not in entry:
+                            k, v = map(str.strip, entry.rsplit(':', 1))
+                            v = v.replace('구분', '').strip()
+                            if k in inhalation_labels:
+                                label = k.replace('급성 독성(', '').replace(')', '')
+                                inhalation_entries.append(f"{label}({v})")
+                            elif k in cmr_map:
+                                cmr_map[k].append(v)
+                                if v not in merged[k]:
+                                    merged[k].append(v)
+                            else:
+                                if v not in merged[k]:
+                                    merged[k].append(v)
+
+                    if inhalation_entries:
+                        result['급성 독성(흡입)'] = '\n'.join(inhalation_entries)
+
                     for k, v_list in merged.items():
-                        result[k] = ', '.join(v_list)
-                        all_new_columns.add(k)
+                        # 예외 처리: CAS No가 64-17-5(에탄올)이고, 항목이 발암성이면 무시
+                        if cas == '64-17-5' and k == '발암성':
+                            continue  # 이 항목은 기록하지 않음
+
+                        result[k] = '\n'.join(v_list)
+                        if k not in HAZARD_ORDER:
+                            unknown_columns.add(k)
+
+                    cmr_grades = []
+                    for values in cmr_map.values():
+                        for v in values:
+                            if v in ['1A', '1B', '2']:
+                                cmr_grades.append(v)
+                    best_grade = get_highest_cmr_grade(cmr_grades)
+                    if best_grade:
+                        result['CMR'] = best_grade
+
+                result['TWA'], result['STEL'] = query_twa_stel(service_key, chem_id)
+                result['증기압'] = query_vapor_pressure(service_key, chem_id)
+                result['개정일'] = query_revision_date(service_key, chem_id)
 
         except Exception as e:
-            # 요청 실패 등 예외 처리
             result['결과없음'] = f'조회 오류: {str(e)}'
 
-        # 결과 저장
-        all_results.append(result)
-        # 진행률 업데이트
-        progress.progress(idx / len(data_rows))
+        results.append(result)
+        progress.progress(min(idx / len(data_rows), 1.0))
 
-    # 결과를 데이터프레임으로 정리
-    result_df = pd.DataFrame(all_results)
+    df = pd.DataFrame(results)
+    return df, sorted(list(unknown_columns))
 
-    # '결과없음' 컬럼의 결측치를 빈 문자열로 채움
-    if '결과없음' in result_df.columns:
-        result_df['결과없음'] = result_df['결과없음'].fillna('')
 
-    # 열 순서 정리
-    first_cols = ['#', '물질명칭', 'CAS No.', '결과없음']
-    remaining_cols = sorted([col for col in result_df.columns if col not in first_cols])
-    ordered_cols = first_cols + remaining_cols
-    for col in ordered_cols:
-        if col not in result_df.columns:
-            result_df[col] = ''  # 누락된 열 채움
-    result_df = result_df[ordered_cols]
+# ----------------- Streamlit 앱 실행 -----------------
+st.set_page_config(page_title="화학물질 유해성 정보 수집기", layout="wide")
+st.title("📋 화학물질 유해성 정보 수집기")
 
-    # 엑셀 파일 생성 시작
-    wb = Workbook()
+SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
+
+# ----------------- 세션 초기화 -----------------
+if 'processed' not in st.session_state:
+    st.session_state.processed = False
+if 'result_file' not in st.session_state:
+    st.session_state.result_file = None
+if 'uploader_key' not in st.session_state:
+    st.session_state.uploader_key = 0  # file_uploader 초기 키
+
+# ----------------- 파일 업로드 -----------------
+uploaded_file = st.file_uploader(
+    "📎 엑셀 파일을 업로드 하세요!", 
+    type="xlsx", 
+    key=f"file_uploader_{st.session_state.uploader_key}"
+)
+
+
+# ----------------- 처리 로직 -----------------
+if uploaded_file and not st.session_state.processed:
+    wb = load_workbook(uploaded_file)
     ws = wb.active
-    ws.title = '결과'
 
-    # 스타일 정의
-    header_font = Font(bold=True, size=10)
-    header_fill = PatternFill(start_color="DDDDDD", end_color="DDDDDD", fill_type="solid")
-    thin_border = Border(left=Side(style="thin"), right=Side(style="thin"),
-                         top=Side(style="thin"), bottom=Side(style="thin"))
+    raw_df = pd.read_excel(uploaded_file, header=None)
+    header_row_full = raw_df.iloc[0].tolist()
+    data_rows = raw_df[1:].copy()
+    data_rows.columns = header_row_full  # 전체 열 이름을 유지
 
-    # 왼쪽에 빈 열 삽입 (여백용)
-    ws.insert_cols(1)
-    ws.column_dimensions['A'].width = 2
+    # ✅ A열~AN열(1~40열)만 제목행 검사
+    header_row = header_row_full[:40]
+    current_headers = set(header_row)
+    expected_headers = set(HAZARD_ORDER)
 
-    # 회사명 출력
-    ws['B1'] = company_name
-    ws['B1'].font = Font(bold=True, size=10)
-    ws['B1'].alignment = Alignment(horizontal='left')
+    unexpected_headers = [h for h in header_row if h not in expected_headers]
+    missing_headers = [h for h in HAZARD_ORDER if h not in current_headers]
 
-    # 헤더 작성
-    ws.append([''] + result_df.columns.tolist())
-    for col_idx, cell in enumerate(ws[2][1:], start=2):
-        cell.font = header_font
-        cell.fill = header_fill
+    if unexpected_headers or missing_headers:
+        st.error("❗제목행(A~AN열)에 오류가 있습니다. 유해성 정보를 조회하지 않습니다.")
+
+        if unexpected_headers:
+            st.markdown("### 🚫 예기치 않은 열 제목")
+            for col in unexpected_headers:
+                st.markdown(f"- `{col}`")
+
+        if missing_headers:
+            st.markdown("### ⚠️ 누락된 필수 항목")
+            for col in missing_headers:
+                st.markdown(f"- `{col}`")
+
+        st.stop()
+
+    # ✅ 유해성 정보 조회
+    required_cols = {'#', '물질명칭', 'CAS No.'}
+    if not required_cols.issubset(set(data_rows.columns)):
+        st.error("필수 열('#', '물질명칭', 'CAS No.')이 누락되어 있습니다.")
+        st.stop()
+
+    data_rows = data_rows[['#', '물질명칭', 'CAS No.']].copy()
+    hazard_df, unknown_hazards = query_cas_info(data_rows, SERVICE_KEY)
+
+    # ✅ 컬럼명 → 엑셀 열 인덱스 매핑
+    col_name_to_idx = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+
+    # ✅ 결과 입력 + 셀 정렬 설정
+    for r_idx, row in hazard_df.iterrows():
+        excel_row = r_idx + 2  # 엑셀은 1-based, 데이터는 2행부터 시작
+        for col_name in HAZARD_ORDER:
+            if col_name in col_name_to_idx:
+                col_idx = col_name_to_idx[col_name]
+                cell = ws.cell(row=excel_row, column=col_idx)
+                cell.value = row.get(col_name, '')
+
+                # 셀 정렬: CAS No. 등은 가운데 정렬, 그 외는 위쪽 정렬
+                if col_name in ['#', 'CAS No.', '결과없음', '개정일']:
+                    cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+                else:
+                    cell.alignment = Alignment(vertical='center', wrap_text=True)
+                    
+
+    #=========================================================================#
+    # 표2 생성
+    #=========================================================================#
+    from openpyxl.utils import get_column_letter
+    from openpyxl.styles import Border, Side, Font, Alignment
+    import math
+
+    # 테두리/폰트 정의
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+    default_font = Font(name='Noto Sans KR', size=10)
+
+    # 유해성 정보 열 목록 (D열~AJ열 = HAZARD_ORDER[4:-4])
+    hazard_cols = HAZARD_ORDER[4:-4]
+    hazard_start_col = 4  # D열 = index 4 (openpyxl 기준은 1-based)
+
+    # 표1의 데이터 범위
+    start_row = 2
+    end_row = start_row + len(hazard_df) - 1
+
+    # 표2 시작 행: 표1 마지막 + 2
+    summary_start_row = end_row + 2
+
+    # 표2 제목행 (D열부터 시작)
+    ws[f"D{summary_start_row}"] = "유해성"
+    ws[f"D{summary_start_row}"].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    ws[f"D{summary_start_row}"].font = default_font
+    ws[f"D{summary_start_row}"].border = thin_border
+
+    for idx, col_name in enumerate(hazard_cols):
+        col_letter = get_column_letter(hazard_start_col + idx + 1)  # E열부터 시작
+        cell = ws[f"{col_letter}{summary_start_row}"]
+        cell.value = col_name
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.font = default_font
         cell.border = thin_border
 
-    # 데이터 행 추가
-    for row_idx, row in enumerate(result_df.itertuples(index=False), start=3):
-        row_values = [''] + list(row)
-        ws.append(row_values)
-        for col_idx, value in enumerate(row_values[1:], start=2):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            cell.font = Font(size=10)
-            cell.border = thin_border
-            if col_idx == result_df.columns.get_loc("CAS No.") + 2:
-                cell.number_format = '@'  # CAS 번호는 문자열로 표시
+    # 표2 행 라벨
+    row_labels = [
+        '구분1', '1A', '1B', '구분2', '구분3', '구분4', '기타구분',
+        '유해물질수', '분석물질수', '유해물질비율'
+    ]
 
-    # 열 너비 자동 조정
-    for column_cells in ws.iter_cols(min_col=2):
-        max_len = 0
-        col = column_cells[0].column_letter
-        for cell in column_cells:
-            if cell.value:
-                max_len = max(max_len, len(str(cell.value)))
-        ws.column_dimensions[col].width = max_len + 2
-
-    # 엑셀 파일을 메모리 버퍼에 저장
-    file_buffer = BytesIO()
-    wb.save(file_buffer)
-    file_buffer.seek(0)
-
-    # 성공 메시지 출력 및 다운로드 버튼 제공
-    st.success("처리가 완료되었습니다. 아래 버튼을 눌러 결과를 다운로드하세요.")
-    st.download_button(
-        label="결과 엑셀 다운로드",
-        data=file_buffer,
-        file_name=f"유해물질정보-{company_name}.xlsx",
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    # 분석물질수: '공단 MSDS 없음' 제외한 개수
+    analyzed_count = sum(
+        1 for r in range(start_row, end_row + 1)
+        if ws.cell(row=r, column=HAZARD_ORDER.index('결과없음') + 1).value != '공단 MSDS 없음'
     )
+
+    # 각 유해성 항목(열)별로 개수 카운트
+    summary_data = []
+    for hazard in hazard_cols:
+        col_idx = HAZARD_ORDER.index(hazard) + 1  # openpyxl은 1-based
+
+        # 전체 값 수집
+        raw_values = [
+            str(ws.cell(row=r, column=col_idx).value).strip()
+            for r in range(start_row, end_row + 1)
+            if ws.cell(row=r, column=col_idx).value not in [None, '']
+        ]
+
+        # 여러 등급이 포함된 경우 분할
+        parts = []
+        for val in raw_values:
+            split_parts = re.split(r'[\n|,]+', val)
+            parts.extend([p.strip() for p in split_parts if p.strip()])
+
+        # 등급별 카운트
+        count_map = {
+            '구분1': parts.count('1'),
+            '1A': parts.count('1A'),
+            '1B': parts.count('1B'),
+            '구분2': parts.count('2'),
+            '구분3': parts.count('3'),
+            '구분4': parts.count('4'),
+        }
+
+        known_values = {'1', '1A', '1B', '2', '3', '4'}
+
+        # 기타구분 계산
+        count_map['기타구분'] = 0
+        for r in range(start_row, end_row + 1):
+            val = ws.cell(row=r, column=col_idx).value
+            
+            # 완전 공백이거나 None이면 → 무시
+            if val is None or (isinstance(val, float) and math.isnan(val)) or str(val).strip() == '':
+                continue
+
+            # 줄바꿈 기준으로 값 분리
+            parts_per_cell = [p.strip() for p in str(val).split('\n') if p.strip()]            
+            # 값이 비어있다면 → 무시
+            if not parts_per_cell:
+                continue
+
+            # 하나라도 unknown 값이 있다면 → 기타구분
+            if any(p not in known_values for p in parts_per_cell):
+                count_map['기타구분'] += 1
+        
+        count_map['유해물질수'] = sum(count_map[k] for k in count_map if k != '유해물질수')
+        count_map['분석물질수'] = analyzed_count
+        count_map['유해물질비율'] = f"{round((count_map['유해물질수'] / analyzed_count) * 100)}%" if analyzed_count else "0%"
+
+        # summary_data에 전치 구조로 삽입
+        for i, label in enumerate(row_labels):
+            if len(summary_data) <= i:
+                summary_data.append([])
+            summary_data[i].append(count_map[label])
+
+    # 표2 데이터 입력
+    for row_offset, (label, row_values) in enumerate(zip(row_labels, summary_data), start=1):
+        row_num = summary_start_row + row_offset
+
+        # D열: 유해성 구분 라벨
+        label_cell = ws.cell(row=row_num, column=hazard_start_col)
+        label_cell.value = label
+        label_cell.alignment = Alignment(horizontal='center', vertical='center')
+        label_cell.font = default_font
+        label_cell.border = thin_border
+
+        # E~AJ열: 유해성 항목별 값
+        for col_offset, value in enumerate(row_values):
+            col_num = hazard_start_col + col_offset + 1
+            cell = ws.cell(row=row_num, column=col_num)
+            cell.value = value
+            cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+            cell.font = default_font
+            cell.border = thin_border
+    #=========================================================================#
+    
+
+    #=========================================================================#
+    # 표3 생성
+    #=========================================================================#
+    # ✅ 표1 AO~BA열은 41~53열 (엑셀 기준: AO~BA)
+    summary_titles = [
+        '유독물질', '제한물질', '금지물질', '허가물질', '사고대비물질',
+        '중점관리물질', '금지·허가물질', '노출·허용기준물질', '직업환경측정물질등',
+        '위험물', '독성가스', '연간입고량', '연간사용·판매량'
+    ]
+
+    # 표3의 컬럼 인덱스 (엑셀 기준 41~53)
+    summary_start_col = 41
+    summary_end_col = summary_start_col + len(summary_titles) - 1
+
+    # 전체 물질 수 (결과없음이 '공단 MSDS 없음'이 아닌 것들)
+    start_row = 2
+    end_row = start_row + len(hazard_df) - 1
+    analyzed_count = 0
+    col_result_idx = HAZARD_ORDER.index('결과없음') + 1
+
+    for r in range(start_row, end_row + 1):
+        val = ws.cell(row=r, column=col_result_idx).value
+        if val != '공단 MSDS 없음':
+            analyzed_count += 1
+
+    # 표3 시작 행 (표2 끝 기준 + 2)
+    table3_start_row = end_row + 2
+    table3_row_labels = ['규제물질', '물질 수', '물질 비율']
+
+    # ✅ 표3 제목 셀 (AN열)
+    ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").font = default_font
+    ws.cell(row=table3_start_row, column=summary_start_col - 1).border = thin_border
+    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").font = default_font
+    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1).border = thin_border
+    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").alignment = Alignment(horizontal='center', vertical='center')
+    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").font = default_font
+    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1).border = thin_border
+
+    # ✅ 표3 열 제목 (summary_titles)
+    for idx, col_name in enumerate(summary_titles):
+        col_letter = get_column_letter(summary_start_col + idx)
+        cell = ws.cell(row=table3_start_row, column=summary_start_col + idx, value=col_name)
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.font = default_font
+        cell.border = thin_border
+
+    # ✅ 각 열별 ▣ 개수 세기 (물질 수), 비율 계산
+    for idx in range(len(summary_titles)):
+        col_idx = summary_start_col + idx
+        count = 0
+        for r in range(start_row, end_row + 1):
+            val = ws.cell(row=r, column=col_idx).value
+            if str(val).strip() == '▣':
+                count += 1
+
+        # 물질 수 입력
+        cell = ws.cell(row=table3_start_row + 1, column=col_idx, value=count)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.font = default_font
+        cell.border = thin_border
+
+        # 물질 비율 입력
+        ratio = f"{round((count / analyzed_count) * 100)}%" if analyzed_count else "0%"
+        cell = ws.cell(row=table3_start_row + 2, column=col_idx, value=ratio)
+        cell.alignment = Alignment(horizontal='center', vertical='center')
+        cell.font = default_font
+        cell.border = thin_border    
+
+       
+    #=========================================================================#
+
+
+
+    # ✅ 저장 및 세션 갱신
+    output = BytesIO()
+    wb.save(output)
+    output.seek(0)
+    st.session_state.result_file = output
+    st.session_state.processed = True   
+
+
+
+# ----------------- 결과 다운로드 -----------------
+if st.session_state.processed:
+    st.success("✅ 유해성 정보 입력이 완료되었습니다.")
+    col1, col2 = st.columns([1, 1])
+
+    with col1:
+        st.download_button(
+            label="📥 결과 엑셀 다운로드",
+            data=st.session_state.result_file,
+            file_name="유해물질_완성본.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        )
+
+    with col2:
+        if st.button("🔁 새 파일 업로드"):
+            # 🔄 uploader_key를 바꿔야 기존 업로드 상태를 완전히 제거함
+            st.session_state.processed = False
+            st.session_state.result_file = None
+            st.session_state.uploader_key += 1
+            st.rerun()
+            
+            
