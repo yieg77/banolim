@@ -170,7 +170,7 @@ def query_cas_info(data_rows, service_key):
                             v = v.replace('구분', '').strip()
                             if k in inhalation_labels:
                                 label = k.replace('급성 독성(', '').replace(')', '')
-                                inhalation_entries.append(f"{label}({v})")
+                                inhalation_entries.append(f"{v}({label})")
                             elif k in cmr_map:
                                 cmr_map[k].append(v)
                                 if v not in merged[k]:
@@ -303,8 +303,9 @@ if uploaded_file and not st.session_state.processed:
     from openpyxl.utils import get_column_letter
     from openpyxl.styles import Border, Side, Font, Alignment
     import math
+    import re
 
-    # 테두리/폰트 정의
+    # -------------------- 설정 --------------------
     thin_border = Border(
         left=Side(style='thin'),
         right=Side(style='thin'),
@@ -313,122 +314,124 @@ if uploaded_file and not st.session_state.processed:
     )
     default_font = Font(name='Noto Sans KR', size=10)
 
-    # 유해성 정보 열 목록 (D열~AJ열 = HAZARD_ORDER[4:-4])
-    hazard_cols = HAZARD_ORDER[4:-4]
-    hazard_start_col = 4  # D열 = index 4 (openpyxl 기준은 1-based)
+    # -------------------- 등급 판별 기준 --------------------
+    grade_to_label = {
+        '1': '구분1',
+        '1A': '1A',
+        '1B': '1B',
+        '2': '구분2',
+        '3': '구분3',
+        '4': '구분4'
+    }
+    grade_priority = {'1': 0, '1A': 1, '1B': 2, '2': 3, '3': 4, '4': 5}
 
-    # 표1의 데이터 범위
+    # -------------------- 등급 추출 함수 --------------------
+    def extract_most_severe_grade(cell_value):
+        if not isinstance(cell_value, str):
+            return None
+        parts = re.split(r'[\n|,]+', cell_value)
+        found = []
+        for part in parts:
+            match = re.match(r'^\s*(1A|1B|1|2|3|4)\b', part.strip())
+            if match:
+                found.append(match.group(1))
+        if not found:
+            return None
+        return min(found, key=lambda g: grade_priority[g])
+
+    # -------------------- 기본 정보 --------------------
+    hazard_cols = HAZARD_ORDER[4:-4]
+    hazard_start_col = 4  # D열 = openpyxl 기준 1-based
     start_row = 2
     end_row = start_row + len(hazard_df) - 1
-
-    # 표2 시작 행: 표1 마지막 + 2
     summary_start_row = end_row + 2
 
-    # 표2 제목행 (D열부터 시작)
+    # -------------------- 제목행 --------------------
     ws[f"D{summary_start_row}"] = "유해성"
     ws[f"D{summary_start_row}"].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     ws[f"D{summary_start_row}"].font = default_font
     ws[f"D{summary_start_row}"].border = thin_border
 
     for idx, col_name in enumerate(hazard_cols):
-        col_letter = get_column_letter(hazard_start_col + idx + 1)  # E열부터 시작
+        col_letter = get_column_letter(hazard_start_col + idx + 1)
         cell = ws[f"{col_letter}{summary_start_row}"]
         cell.value = col_name
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.font = default_font
         cell.border = thin_border
 
-    # 표2 행 라벨
+    # -------------------- 라벨 --------------------
     row_labels = [
         '구분1', '1A', '1B', '구분2', '구분3', '구분4', '기타구분',
         '유해물질수', '분석물질수', '유해물질비율'
     ]
 
-    # 분석물질수: '공단 MSDS 없음' 제외한 개수
+    # -------------------- 분석물질수 --------------------
     analyzed_count = sum(
         1 for r in range(start_row, end_row + 1)
         if ws.cell(row=r, column=HAZARD_ORDER.index('결과없음') + 1).value != '공단 MSDS 없음'
     )
 
-    # 각 유해성 항목(열)별로 개수 카운트
+    # -------------------- 표2 생성 --------------------
     summary_data = []
+
     for hazard in hazard_cols:
-        col_idx = HAZARD_ORDER.index(hazard) + 1  # openpyxl은 1-based
+        col_idx = HAZARD_ORDER.index(hazard) + 1
+        count_map = {label: 0 for label in row_labels[:-3]}  # 유해물질수, 분석물질수, 비율 제외
 
-        # 전체 값 수집
-        raw_values = [
-            str(ws.cell(row=r, column=col_idx).value).strip()
-            for r in range(start_row, end_row + 1)
-            if ws.cell(row=r, column=col_idx).value not in [None, '']
-        ]
-
-        # 여러 등급이 포함된 경우 분할
-        parts = []
-        for val in raw_values:
-            split_parts = re.split(r'[\n|,]+', val)
-            parts.extend([p.strip() for p in split_parts if p.strip()])
-
-        # 등급별 카운트
-        count_map = {
-            '구분1': parts.count('1'),
-            '1A': parts.count('1A'),
-            '1B': parts.count('1B'),
-            '구분2': parts.count('2'),
-            '구분3': parts.count('3'),
-            '구분4': parts.count('4'),
-        }
-
-        known_values = {'1', '1A', '1B', '2', '3', '4'}
-
-        # 기타구분 계산
-        count_map['기타구분'] = 0
         for r in range(start_row, end_row + 1):
             val = ws.cell(row=r, column=col_idx).value
-            
-            # 완전 공백이거나 None이면 → 무시
+
             if val is None or (isinstance(val, float) and math.isnan(val)) or str(val).strip() == '':
                 continue
 
-            # 줄바꿈 기준으로 값 분리
-            parts_per_cell = [p.strip() for p in str(val).split('\n') if p.strip()]            
-            # 값이 비어있다면 → 무시
-            if not parts_per_cell:
-                continue
+            most_severe = extract_most_severe_grade(str(val))
 
-            # 하나라도 unknown 값이 있다면 → 기타구분
-            if any(p not in known_values for p in parts_per_cell):
+            if most_severe in grade_to_label:
+                label = grade_to_label[most_severe]
+                count_map[label] += 1
+            #elif most_severe is None:
+            #    continue
+            else:
                 count_map['기타구분'] += 1
-        
-        count_map['유해물질수'] = sum(count_map[k] for k in count_map if k != '유해물질수')
+
+        count_map['유해물질수'] = sum(count_map[label] for label in row_labels[:7])
         count_map['분석물질수'] = analyzed_count
         count_map['유해물질비율'] = f"{round((count_map['유해물질수'] / analyzed_count) * 100)}%" if analyzed_count else "0%"
 
-        # summary_data에 전치 구조로 삽입
         for i, label in enumerate(row_labels):
             if len(summary_data) <= i:
                 summary_data.append([])
             summary_data[i].append(count_map[label])
 
-    # 표2 데이터 입력
+    # -------------------- 표2 입력 --------------------
     for row_offset, (label, row_values) in enumerate(zip(row_labels, summary_data), start=1):
         row_num = summary_start_row + row_offset
 
-        # D열: 유해성 구분 라벨
         label_cell = ws.cell(row=row_num, column=hazard_start_col)
         label_cell.value = label
         label_cell.alignment = Alignment(horizontal='center', vertical='center')
         label_cell.font = default_font
         label_cell.border = thin_border
 
-        # E~AJ열: 유해성 항목별 값
         for col_offset, value in enumerate(row_values):
             col_num = hazard_start_col + col_offset + 1
             cell = ws.cell(row=row_num, column=col_num)
-            cell.value = value
+            
+            
+            if label in ('유해물질수', '유해물질비율') :
+                # 유해물질수와 비율은 그대로 기록
+                cell.value = value
+            else:
+                # 나머지는 0이면 빈 셀
+                cell.value = value if value != 0 else None
+                                    
+            #cell.value = value
             cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
             cell.font = default_font
             cell.border = thin_border
     #=========================================================================#
+
     
 
     #=========================================================================#
