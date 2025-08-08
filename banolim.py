@@ -215,8 +215,10 @@ def query_cas_info(data_rows, service_key):
 
 
 # ----------------- Streamlit 앱 실행 -----------------
+import os
+
 st.set_page_config(page_title="화학물질 유해성 정보 수집기", layout="wide")
-st.title("📋 화학물질 유해성 정보 수집기 v.250808")
+st.title("📋 화학물질 유해성 정보 수집기 v.250808_2")
 
 SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
 
@@ -230,11 +232,10 @@ if 'uploader_key' not in st.session_state:
 
 # ----------------- 파일 업로드 -----------------
 uploaded_file = st.file_uploader(
-    "📎 엑셀 파일을 업로드 하세요!", 
+    "📎 엑셀 파일을 업로드 하세요! (입력파일 A.xlsx)", 
     type="xlsx", 
     key=f"file_uploader_{st.session_state.uploader_key}"
 )
-
 
 # ----------------- 처리 로직 -----------------
 if uploaded_file and not st.session_state.processed:
@@ -441,7 +442,7 @@ if uploaded_file and not st.session_state.processed:
     summary_titles = [
         '유독물질', '제한물질', '금지물질', '허가물질', '사고대비물질',
         '중점관리물질', '금지·허가물질', '노출·허용기준물질', '직업환경측정물질등',
-        '위험물', '독성가스', '연간입고량', '연간사용·판매량'
+        '위험물', '독성가스'
     ]
 
     # 표3의 컬럼 인덱스 (엑셀 기준 41~53)
@@ -502,11 +503,92 @@ if uploaded_file and not st.session_state.processed:
         cell = ws.cell(row=table3_start_row + 2, column=col_idx, value=ratio)
         cell.alignment = Alignment(horizontal='center', vertical='center')
         cell.font = default_font
-        cell.border = thin_border    
-
-       
+        cell.border = thin_border          
     #=========================================================================#
 
+
+    #=========================================================================#
+    # 표4 생성
+    #=========================================================================#
+    from openpyxl.utils import get_column_letter
+    from collections import Counter
+
+    # ----------------- 엑셀 시트에서 열 인덱스 찾기 -----------------
+    header_row = 1
+    col_idx_in = None
+    col_idx_use = None
+
+    for col in range(1, ws.max_column + 1):
+        header = ws.cell(row=header_row, column=col).value
+        if header == '연간입고량':
+            col_idx_in = col
+        elif header == '연간사용·판매량':
+            col_idx_use = col
+
+    if col_idx_in is None or col_idx_use is None:
+        raise ValueError("'연간입고량' 또는 '연간사용·판매량' 열이 존재하지 않습니다.")
+
+    # ----------------- 표3 마지막 위치 기준으로 시작행 설정 -----------------
+    table3_end_row = table3_start_row + 2  # 표3은 총 3행
+    table4_start_row = table3_end_row + 2  # 표3 끝 + 2줄 띄움
+    table4_start_col = 51  # AY열 = 51
+
+    # ----------------- 표4 열 제목 -----------------
+    headers = ['사용량 구분', '연간입고량', '연간사용·판매량']
+    for idx, header in enumerate(headers):
+        col_letter = get_column_letter(table4_start_col + idx)
+        cell = ws[f"{col_letter}{table4_start_row}"]
+        cell.value = header
+        cell.font = default_font
+        cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
+        cell.border = thin_border
+
+    # ----------------- 사용량 구분 값 및 범위 -----------------
+    usage_levels = [str(i) for i in range(1, 11)]
+    start_row = 2
+    end_row = start_row + len(hazard_df) - 1
+
+    # ----------------- 개수 카운트 -----------------
+    incoming_counter = Counter()
+    usage_counter = Counter()
+
+    for r in range(start_row, end_row + 1):
+        in_val = str(ws.cell(row=r, column=col_idx_in).value).strip()
+        use_val = str(ws.cell(row=r, column=col_idx_use).value).strip()
+
+        if in_val in usage_levels:
+            incoming_counter[in_val] += 1
+        if use_val in usage_levels:
+            usage_counter[use_val] += 1
+
+    # ----------------- 표4 본문 작성 -----------------
+    for i, level in enumerate(usage_levels):
+        row = table4_start_row + 1 + i
+
+        # 첫 번째 열: 사용량 구분 번호
+        cell1 = ws.cell(row=row, column=table4_start_col)
+        cell1.value = level
+        cell1.font = default_font
+        cell1.alignment = Alignment(horizontal='center', vertical='center')
+        cell1.border = thin_border
+
+        # 두 번째 열: 연간입고량
+        cell2 = ws.cell(row=row, column=table4_start_col + 1)
+        val2 = incoming_counter[level]
+        cell2.value = val2 if val2 != 0 else None
+        cell2.font = default_font
+        cell2.alignment = Alignment(horizontal='center', vertical='center')
+        cell2.border = thin_border
+
+        # 세 번째 열: 연간사용·판매량
+        cell3 = ws.cell(row=row, column=table4_start_col + 2)
+        val3 = usage_counter[level]
+        cell3.value = val3 if val3 != 0 else None
+        cell3.font = default_font
+        cell3.alignment = Alignment(horizontal='center', vertical='center')
+        cell3.border = thin_border
+
+    #=========================================================================#
 
 
     # ✅ 저장 및 세션 갱신
@@ -520,14 +602,23 @@ if uploaded_file and not st.session_state.processed:
 
 # ----------------- 결과 다운로드 -----------------
 if st.session_state.processed:
-    st.success("✅ 유해성 정보 입력이 완료되었습니다.")
+    st.success("✅ 유해성 정보 수집이 완료되었습니다.")
     col1, col2 = st.columns([1, 1])
+    
+    # 업로드된 파일의 원래 이름
+    input_filename = uploaded_file.name
 
+    # 확장자 제거 + '입력파일 ' 접두사 제거
+    basename = os.path.splitext(input_filename)[0].replace('입력파일 ', '')
+    
+    # 출력 파일명 설정
+    output_filename = f"{basename}_유해성분석.xlsx"
+    
     with col1:
         st.download_button(
             label="📥 결과 엑셀 다운로드",
             data=st.session_state.result_file,
-            file_name="유해물질_완성본.xlsx",
+            file_name=output_filename,
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
 
