@@ -232,7 +232,7 @@ if 'uploader_key' not in st.session_state:
 
 # ----------------- 파일 업로드 -----------------
 uploaded_file = st.file_uploader(
-    "📎 엑셀 파일을 업로드 하세요! (A.xlsx, A=회사명)", 
+    "📎 엑셀 파일을 업로드 하세요! (A.xlsx, A:회사명)", 
     type="xlsx", 
     key=f"file_uploader_{st.session_state.uploader_key}"
 )
@@ -531,10 +531,10 @@ if uploaded_file and not st.session_state.processed:
     # ----------------- 표3 마지막 위치 기준으로 시작행 설정 -----------------
     table3_end_row = table3_start_row + 2  # 표3은 총 3행
     table4_start_row = table3_end_row + 2  # 표3 끝 + 2줄 띄움
-    table4_start_col = 51  # AY열 = 51
+    table4_start_col = 50  # AX열 = 50
 
     # ----------------- 표4 열 제목 -----------------
-    headers = ['사용량 구분', '연간입고량', '연간사용·판매량']
+    headers = ['사용량 구분', '중량(톤/년) 또는 부피단위(㎥/년)', '연간입고량', '연간사용·판매량']
     for idx, header in enumerate(headers):
         col_letter = get_column_letter(table4_start_col + idx)
         cell = ws[f"{col_letter}{table4_start_row}"]
@@ -545,6 +545,18 @@ if uploaded_file and not st.session_state.processed:
 
     # ----------------- 사용량 구분 값 및 범위 -----------------
     usage_levels = [str(i) for i in range(1, 11)]
+    usage_descriptions = [
+        "0.1미만",         # 1
+        "0.1~0.5",         # 2
+        "0.5~1.0",         # 3
+        "1~2.5",           # 4
+        "2.5~5.0",         # 5
+        "5~20",            # 6
+        "20~200",          # 7
+        "200~1,000",       # 8
+        "1,000~5,000",     # 9
+        "5,000이상"        # 10
+    ]
     start_row = 2
     end_row = start_row + len(hazard_df) - 1
 
@@ -571,22 +583,30 @@ if uploaded_file and not st.session_state.processed:
         cell1.font = default_font
         cell1.alignment = Alignment(horizontal='center', vertical='center')
         cell1.border = thin_border
-
-        # 두 번째 열: 연간입고량
+        
+        # 두 번째 열: 분류 설명(단위 캡션 + 범위)
         cell2 = ws.cell(row=row, column=table4_start_col + 1)
-        val2 = incoming_counter[level]
-        cell2.value = val2 if val2 != 0 else None
+        # 첫 행에는 단위 캡션 포함, 이후 행은 범위만
+        cell2.value = f"{usage_descriptions[i]}" if i == 0 else usage_descriptions[i]
         cell2.font = default_font
-        cell2.alignment = Alignment(horizontal='center', vertical='center')
+        cell2.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell2.border = thin_border
 
-        # 세 번째 열: 연간사용·판매량
+        # 세 번째 열: 연간입고량
         cell3 = ws.cell(row=row, column=table4_start_col + 2)
-        val3 = usage_counter[level]
+        val3 = incoming_counter[level]
         cell3.value = val3 if val3 != 0 else None
         cell3.font = default_font
         cell3.alignment = Alignment(horizontal='center', vertical='center')
         cell3.border = thin_border
+
+        # 네 번째 열: 연간사용·판매량
+        cell4 = ws.cell(row=row, column=table4_start_col + 3)
+        val4 = usage_counter[level]
+        cell4.value = val4 if val4 != 0 else None
+        cell4.font = default_font
+        cell4.alignment = Alignment(horizontal='center', vertical='center')
+        cell4.border = thin_border
 
     #=========================================================================#
 
