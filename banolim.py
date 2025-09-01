@@ -232,7 +232,7 @@ if 'uploader_key' not in st.session_state:
 
 # ----------------- 파일 업로드 -----------------
 uploaded_file = st.file_uploader(
-    "📎 엑셀 파일을 업로드 하세요! (입력파일 A.xlsx)", 
+    "📎 엑셀 파일을 업로드 하세요! (A.xlsx, A=회사명)", 
     type="xlsx", 
     key=f"file_uploader_{st.session_state.uploader_key}"
 )
@@ -607,6 +607,8 @@ if st.session_state.processed:
     
     # 업로드된 파일의 원래 이름
     input_filename = uploaded_file.name
+    
+    print(input_filename)
 
     # 확장자 제거 + '입력파일 ' 접두사 제거
     basename = os.path.splitext(input_filename)[0].replace('입력파일 ', '')
