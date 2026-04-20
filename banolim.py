@@ -503,7 +503,7 @@ def query_cas_info(data_rows, service_key):
 import os
 
 st.set_page_config(page_title="화학물질 유해성 정보 수집기", layout="wide")
-st.title("📋 화학물질 유해성 정보 수집기 v.260419")
+st.title("📋 화학물질 유해성 정보 수집기 v.260420")
 
 SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
 
