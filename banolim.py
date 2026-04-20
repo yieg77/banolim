@@ -8,15 +8,18 @@ from openpyxl import load_workbook
 from openpyxl.styles import Alignment
 from io import BytesIO
 import re
+from openpyxl.styles import PatternFill  #20260420
+from openpyxl.styles.colors import Color #20260420
 
 # ----------------- 고정 유해성 항목 순서 -----------------
 HAZARD_ORDER = [
     '#', '물질명칭', 'CAS No.', '결과없음',
     '발암성', '생식독성', '생식세포 변이원성', 'CMR',
-    '급성 독성(경구)', '급성 독성(경피)', '급성 독성(흡입)',
-    '흡인 유해성', '피부 부식성/피부 자극성', '심한 눈 손상성/눈 자극성',
-    '호흡기 과민성', '피부 과민성', '특정표적장기 독성(1회 노출)',
-    '특정표적장기 독성(반복 노출)', '급성 수생환경 유해성', '만성 수생환경 유해성',
+    '급성 독성(경구)', '급성 독성(경피)', '급성 독성(흡입)', '급성 독성',  #260419
+    '흡인 유해성', '피부 부식성/피부 자극성', '심한 눈 손상성/눈 자극성', '피부/눈 자극성', #260419
+    '호흡기 과민성', '피부 과민성', '피부/호흡기 과민성', #260419
+    '특정표적장기 독성(1회 노출)', '특정표적장기 독성(반복 노출)', '특정표적장기 독성', #260419
+    '급성 수생환경 유해성', '만성 수생환경 유해성', '수생환경 유해성', #260419
     '폭발성 물질', '자기반응성 물질', '유기과산화물', '산화성 가스',
     '산화성 액체', '산화성 고체', '인화성 가스', '인화성 에어로졸',
     '인화성 액체', '인화성 고체', '자연발화성 액체', '자연발화성 고체',
@@ -27,19 +30,89 @@ HAZARD_ORDER = [
     '특수건강진단대상물질',
     '노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질', #0930
     '허가물질','사고대비물질','중점관리물질','위험물','독성가스', #0930
-    '인체급성유해성물질', '인체만성유해성물질'
+    '인체급성유해성물질', '인체만성유해성물질',
+    '[11번] 특정표적장기 독성(1회 노출)', '[11번] 특정표적장기 독성(반복 노출)'  #260419
 ]
 
+# 260419 ########################
+# 전역상수로 변경
+# -------------------- 등급 판별 기준 --------------------
+CMR_GRADE_PRIORITY = {'1A': 0, '1B': 1, '2': 2}
+GRADE_PRIORITY = {'1': 0, '2': 1, '3': 2, '4': 3}
+
+# ----------------- 취합 항목 정의 -----------------
+AGGREGATE_GROUPS = [
+    ('급성 독성',      ['급성 독성(경구)', '급성 독성(경피)', '급성 독성(흡입)']),
+    ('피부/눈 자극성', ['피부 부식성/피부 자극성', '심한 눈 손상성/눈 자극성']),
+    ('피부/호흡기 과민성', ['호흡기 과민성', '피부 과민성']),
+    ('특정표적장기 독성',  ['특정표적장기 독성(1회 노출)', '특정표적장기 독성(반복 노출)']),
+    ('수생환경 유해성',    ['급성 수생환경 유해성', '만성 수생환경 유해성']),
+]
+
+# ----------------- CMR 등급 추출 함수 -----------------
+def extract_cmr_grades(val):
+    """CMR용: 1A, 1B, 2만 추출"""
+    if not isinstance(val, str) or not val.strip():
+        return []
+    grades = []
+    for part in re.split(r'[\n|,]+', val):
+        m = re.match(r'^\s*(1A|1B|2)\b', part.strip())
+        if m:
+            grades.append(m.group(1))
+    return grades
+
+# ----------------- 일반용 등급 추출 함수 -----------------
+def extract_grades(val):
+    """일반용: 1, 2, 3, 4 추출"""
+    if not isinstance(val, str) or not val.strip():
+        return []
+    grades = []
+    for part in re.split(r'[\n|,]+', val):
+        m = re.match(r'^\s*(1|2|3|4)\b', part.strip())
+        if m:
+            grades.append(m.group(1))
+    return grades
+
+def get_highest_cmr_grade(grades):
+    """CMR용 최고 등급 반환"""
+    valid = [g for g in grades if g in CMR_GRADE_PRIORITY]
+    if not valid:
+        return None
+    return min(valid, key=lambda g: CMR_GRADE_PRIORITY[g])
+
+def get_highest_grade(grades):
+    """일반용 최고 등급 반환"""
+    valid = [g for g in grades if g in GRADE_PRIORITY]
+    if not valid:
+        return None
+    return min(valid, key=lambda g: GRADE_PRIORITY[g])
+
+def compute_cmr_grade(result, source_keys):
+    """CMR 취합"""
+    grades = []
+    for k in source_keys:
+        grades.extend(extract_cmr_grades(result.get(k, '')))
+    return get_highest_cmr_grade(grades)
+
+def compute_aggregate_grade(result, source_keys):
+    """일반 취합"""
+    grades = []
+    for k in source_keys:
+        grades.extend(extract_grades(result.get(k, '')))
+    return get_highest_grade(grades)
+
+################################ 260419
 
 # ----------------- CMR 최고 등급 판별 함수 -----------------
-def get_highest_cmr_grade(grades):
-    priority = {'1A': 0, '1B': 1, '2': 2}
-    best = None
-    for g in grades:
-        if g in priority:
-            if best is None or priority[g] < priority[best]:
-                best = g
-    return best
+#def get_highest_cmr_grade(grades):
+#    priority = {'1A': 0, '1B': 1, '2': 2}
+#    highest = None
+#    for g in grades:
+#        if g in priority:
+#            if highest is None or priority[g] < priority[highest]:
+#                highest = g
+#    return highest
+##closed 260419
 
 # ----------------- TWA, STEL 조회 함수 -----------------
 def query_twa_stel(service_key, chem_id):
@@ -209,7 +282,7 @@ def query_detail15(service_key, chem_id):
                 if has_keyword(detail, '인체만성유해성물질'):
                     result['인체만성유해성물질'] = True
                     
-        print(f'detail15 result({chem_id})\n{result}')
+        #print(f'detail15 result({chem_id})\n{result}')
 
         return result
 
@@ -235,6 +308,37 @@ def query_detail15(service_key, chem_id):
             '인체급성유해성물질': False,
             '인체만성유해성물질': False            
         }
+        
+###260419 [11번] 특정표적장기 독성(1회 노출), [11번] 특정표적장기 독성(반복 노출) 추가
+def query_detail11(service_key, chem_id):
+    import html #260419
+
+    try:
+        res = requests.get(
+            'https://msds.kosha.or.kr/openapi/service/msdschem/chemdetail11',
+            params={'serviceKey': service_key, 'chemId': chem_id},
+            timeout=10
+        )
+        res.encoding = 'utf-8'
+        root = ET.fromstring(res.text)
+
+        stot_single   = ''
+        stot_repeated = ''
+        
+        for item in root.findall('.//item'):
+            code   = item.findtext('msdsItemCode')
+            detail = html.unescape(item.findtext('itemDetail') or '')
+            if detail.strip() == '자료없음':
+                continue
+            if code == 'K0418':
+                stot_single = detail.strip()
+            elif code == 'K0420':
+                stot_repeated = detail.strip()
+
+        return stot_single, stot_repeated
+    except:
+        return '', ''
+##########################################260419
         
 # ----------------- CAS 정보 조회 함수 -----------------
 def query_cas_info(data_rows, service_key):
@@ -319,11 +423,22 @@ def query_cas_info(data_rows, service_key):
                     cmr_grades = []
                     for values in cmr_map.values():
                         for v in values:
-                            if v in ['1A', '1B', '2']:
-                                cmr_grades.append(v)
-                    best_grade = get_highest_cmr_grade(cmr_grades)
-                    if best_grade:
-                        result['CMR'] = best_grade
+                            cmr_grades.extend(extract_cmr_grades(v))  #260419
+
+                            #if v in ['1A', '1B', '2']:
+                            #    cmr_grades.append(v)  #closed 260419
+
+                    highest_grade = get_highest_cmr_grade(cmr_grades)
+                    if highest_grade:
+                        result['CMR'] = highest_grade
+                        
+                    # 260419
+                    # 일반 취합 (5개 항목 일괄 처리)
+                    for agg_col, source_keys in AGGREGATE_GROUPS:
+                        grade = compute_aggregate_grade(result, source_keys)
+                        if grade:
+                            result[agg_col] = grade
+                    ########### 260419                    
 
                 result['TWA'], result['STEL'] = query_twa_stel(service_key, chem_id)
                 result['증기압'] = query_vapor_pressure(service_key, chem_id)
@@ -364,6 +479,14 @@ def query_cas_info(data_rows, service_key):
                 if res_detail15['독성가스'] :
                     result['독성가스'] = '▣'
                 #--------------------------------0930
+                stot_single, stot_repeated = query_detail11(service_key, chem_id)
+                if stot_single:
+                    result['[11번] 특정표적장기 독성(1회 노출)'] = stot_single
+                if stot_repeated:
+                    result['[11번] 특정표적장기 독성(반복 노출)'] = stot_repeated                
+                ###260419
+                
+                #--------------------------------260419
 
         except Exception as e:
             result['결과없음'] = f'조회 오류: {str(e)}'
@@ -380,7 +503,7 @@ def query_cas_info(data_rows, service_key):
 import os
 
 st.set_page_config(page_title="화학물질 유해성 정보 수집기", layout="wide")
-st.title("📋 화학물질 유해성 정보 수집기 v.250930_1")
+st.title("📋 화학물질 유해성 정보 수집기 v.260419")
 
 SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
 
@@ -410,14 +533,21 @@ if uploaded_file and not st.session_state.processed:
     data_rows.columns = header_row_full  # 전체 열 이름을 유지
 
     #header_row = header_row_full[:45]  # ✅ A열~AS열(1~45열)만 제목행 검사
-    header_row = header_row_full[:56]  # 0930 : A열~BD열(1~56열)만 제목행 검사
+    #header_row = header_row_full[:56]  # 0930 : A열~BD열(1~56열)만 제목행 검사
+    header_row = header_row_full[:61]  # 260419 : A열~BI열(1~61열)만 제목행 검사
     current_headers = set(header_row)
-    #print('[current_headers]\n', current_headers)
-    expected_headers = set(HAZARD_ORDER)
+    print('[current_headers]\n', current_headers)
+    #expected_headers = set(HAZARD_ORDER) #closed 260419
+    # 260419
+    SKIP_HEADER_CHECK = {'[11번] 특정표적장기 독성(1회 노출)', '[11번] 특정표적장기 독성(반복 노출)'}
+    expected_headers = set(HAZARD_ORDER) - SKIP_HEADER_CHECK
+
+    missing_headers = [h for h in HAZARD_ORDER if h not in current_headers and h not in SKIP_HEADER_CHECK]    
+    #---------------260419    
 
     unexpected_headers = [h for h in header_row if h not in expected_headers]
     #print('[unexpected_headers]\n', unexpected_headers)
-    missing_headers = [h for h in HAZARD_ORDER if h not in current_headers]
+    #missing_headers = [h for h in HAZARD_ORDER if h not in current_headers] #closed 260419
     #print('[missing_headers]\n', missing_headers)
     
     
@@ -469,7 +599,13 @@ if uploaded_file and not st.session_state.processed:
                                 #---------------------------0930
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 else:
-                    cell.alignment = Alignment(vertical='center', wrap_text=True)
+                    #260419
+                    if col_name in ['[11번] 특정표적장기 독성(1회 노출)', '[11번] 특정표적장기 독성(반복 노출)']:
+                        cell.alignment = Alignment(vertical='top', wrap_text=False)
+                    else:
+                        cell.alignment = Alignment(vertical='center', wrap_text=True)
+                    #-------------------260419
+                    #cell.alignment = Alignment(vertical='center', wrap_text=True)  #closed 260419
                     
 
     #=========================================================================#
@@ -489,30 +625,30 @@ if uploaded_file and not st.session_state.processed:
     )
     default_font = Font(name='Noto Sans KR', size=10)
 
+    #260420 -------------------- 색상 정의 --------------------
+    fill_header = PatternFill(fill_type='solid', fgColor=Color(theme=8, tint=0.3999755851924192))  # 제목행
+    fill_label  = PatternFill(fill_type='solid', fgColor=Color(theme=4, tint=0.7999816888943144))  # 라벨열
+    #------------------------260420
+
     # -------------------- 등급 판별 기준 --------------------
-    grade_to_label = {
-        '1': '구분1',
-        '1A': '1A',
-        '1B': '1B',
-        '2': '구분2',
-        '3': '구분3',
-        '4': '구분4'
-    }
-    grade_priority = {'1': 0, '1A': 1, '1B': 2, '2': 3, '3': 4, '4': 5}
+    #grade_to_label = {'1': '구분1', '1A': '1A', '1B': '1B', '2': '구분2', '3': '구분3', '4': '구분4'}
+    #grade_priority = {'1': 0, '1A': 1, '1B': 2, '2': 3, '3': 4, '4': 5}
+    # closed 260419 전역 상수로 변경
 
     # -------------------- 등급 추출 함수 --------------------
-    def extract_most_severe_grade(cell_value):
-        if not isinstance(cell_value, str):
-            return None
-        parts = re.split(r'[\n|,]+', cell_value)
-        found = []
-        for part in parts:
-            match = re.match(r'^\s*(1A|1B|1|2|3|4)\b', part.strip())
-            if match:
-                found.append(match.group(1))
-        if not found:
-            return None
-        return min(found, key=lambda g: grade_priority[g])
+    #def extract_most_severe_grade(cell_value):
+    #    if not isinstance(cell_value, str):
+    #        return None
+    #    parts = re.split(r'[\n|,]+', cell_value)
+    #    found = []
+    #    for part in parts:
+    #        match = re.match(r'^\s*(1A|1B|1|2|3|4)\b', part.strip())
+    #        if match:
+    #            found.append(match.group(1))
+    #    if not found:
+    #        return None
+    #    return min(found, key=lambda g: grade_priority[g])
+    # closed 260419
 
     # -------------------- 기본 정보 --------------------
     #hazard_cols = HAZARD_ORDER[4:-9]
@@ -527,6 +663,7 @@ if uploaded_file and not st.session_state.processed:
     ws[f"D{summary_start_row}"].alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
     ws[f"D{summary_start_row}"].font = default_font
     ws[f"D{summary_start_row}"].border = thin_border
+    ws[f"D{summary_start_row}"].fill = fill_header  #260420 셀 색깔
 
     for idx, col_name in enumerate(hazard_cols):
         col_letter = get_column_letter(hazard_start_col + idx + 1)
@@ -535,6 +672,7 @@ if uploaded_file and not st.session_state.processed:
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.font = default_font
         cell.border = thin_border
+        cell.fill = fill_header  #260420 셀 색깔
 
     # -------------------- 라벨 --------------------
     row_labels = [
@@ -549,6 +687,10 @@ if uploaded_file and not st.session_state.processed:
     )
 
     # -------------------- 표2 생성 --------------------
+    cmr_agg_cols     = {'CMR'}
+    general_agg_cols = {agg_col for agg_col, _ in AGGREGATE_GROUPS}
+    cmr_source_cols  = {'발암성', '생식독성', '생식세포 변이원성'}
+
     summary_data = []
 
     for hazard in hazard_cols:
@@ -561,15 +703,47 @@ if uploaded_file and not st.session_state.processed:
             if val is None or (isinstance(val, float) and math.isnan(val)) or str(val).strip() == '':
                 continue
 
-            most_severe = extract_most_severe_grade(str(val))
+            ###############
+            #most_severe = extract_most_severe_grade(str(val))
 
-            if most_severe in grade_to_label:
-                label = grade_to_label[most_severe]
-                count_map[label] += 1
+            #if most_severe in grade_to_label:
+            #    label = grade_to_label[most_severe]
+            #    count_map[label] += 1
+            #closed 260419
+            
             #elif most_severe is None:
             #    continue
+            #else:
+            #    count_map['기타구분'] += 1
+            ##########closed 260419
+
+            #####260419
+            val_str = str(val).strip()
+
+            if hazard in cmr_agg_cols:
+                label_map = {'1A': '1A', '1B': '1B', '2': '구분2'}
+                count_map[label_map.get(val_str, '기타구분')] += 1
+
+            elif hazard in general_agg_cols:
+                label_map = {'1': '구분1', '2': '구분2', '3': '구분3', '4': '구분4'}
+                count_map[label_map.get(val_str, '기타구분')] += 1
+
+            elif hazard in cmr_source_cols:
+                grades = extract_cmr_grades(val_str)
+                most_severe = get_highest_cmr_grade(grades)
+                label_map = {'1A': '1A', '1B': '1B', '2': '구분2'}
+                if most_severe:
+                    count_map[label_map.get(most_severe, '기타구분')] += 1
+
             else:
-                count_map['기타구분'] += 1
+                grades = extract_grades(val_str)
+                most_severe = get_highest_grade(grades)
+                label_map = {'1': '구분1', '2': '구분2', '3': '구분3', '4': '구분4'}
+                if most_severe:
+                    count_map[label_map.get(most_severe, '기타구분')] += 1
+                else:
+                    count_map['기타구분'] += 1     
+            ##################260419       
 
         count_map['유해물질수'] = sum(count_map[label] for label in row_labels[:7])
         count_map['분석물질수'] = analyzed_count
@@ -589,6 +763,7 @@ if uploaded_file and not st.session_state.processed:
         label_cell.alignment = Alignment(horizontal='center', vertical='center')
         label_cell.font = default_font
         label_cell.border = thin_border
+        label_cell.fill = fill_label  #260420 셀 색깔
 
         for col_offset, value in enumerate(row_values):
             col_num = hazard_start_col + col_offset + 1
@@ -629,7 +804,8 @@ if uploaded_file and not st.session_state.processed:
     ]
     
     # 표3의 컬럼 인덱스 (엑셀 기준 41~58)
-    summary_start_col = 41
+    #summary_start_col = 41
+    summary_start_col = 46 #260419
     summary_end_col = summary_start_col + len(summary_titles) - 1
 
     # 전체 물질 수 (결과없음이 '공단 MSDS 없음'이 아닌 것들)
@@ -648,15 +824,39 @@ if uploaded_file and not st.session_state.processed:
     table3_row_labels = ['규제물질', '물질 수', '물질 비율']
 
     # ✅ 표3 제목 셀 (AN열)
-    ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").alignment = Alignment(horizontal='center', vertical='center')
-    ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").font = default_font
-    ws.cell(row=table3_start_row, column=summary_start_col - 1).border = thin_border
-    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").alignment = Alignment(horizontal='center', vertical='center')
-    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").font = default_font
-    ws.cell(row=table3_start_row + 1, column=summary_start_col - 1).border = thin_border
-    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").alignment = Alignment(horizontal='center', vertical='center')
-    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").font = default_font
-    ws.cell(row=table3_start_row + 2, column=summary_start_col - 1).border = thin_border
+    #ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").alignment = Alignment(horizontal='center', vertical='center')
+    #ws.cell(row=table3_start_row, column=summary_start_col - 1, value="규제물질").font = default_font
+    #ws.cell(row=table3_start_row, column=summary_start_col - 1).border = thin_border
+    #ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").alignment = Alignment(horizontal='center', vertical='center')
+    #ws.cell(row=table3_start_row + 1, column=summary_start_col - 1, value="물질 수").font = default_font
+    #ws.cell(row=table3_start_row + 1, column=summary_start_col - 1).border = thin_border
+    #ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").alignment = Alignment(horizontal='center', vertical='center')
+    #ws.cell(row=table3_start_row + 2, column=summary_start_col - 1, value="물질 비율").font = default_font
+    #ws.cell(row=table3_start_row + 2, column=summary_start_col - 1).border = thin_border
+    #closed 260420
+
+    #260420 셀 색깔 추가하면서 코드 
+    c = ws.cell(row=table3_start_row, column=summary_start_col - 1)
+    c.value = "규제물질"
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    c.font = default_font
+    c.border = thin_border
+    c.fill = fill_header
+
+    c = ws.cell(row=table3_start_row + 1, column=summary_start_col - 1)
+    c.value = "물질 수"
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    c.font = default_font
+    c.border = thin_border
+    c.fill = fill_label
+
+    c = ws.cell(row=table3_start_row + 2, column=summary_start_col - 1)
+    c.value = "물질 비율"
+    c.alignment = Alignment(horizontal='center', vertical='center')
+    c.font = default_font
+    c.border = thin_border
+    c.fill = fill_label
+    #-------------------260420
 
     # ✅ 표3 열 제목 (summary_titles)
     for idx, col_name in enumerate(summary_titles):
@@ -665,6 +865,7 @@ if uploaded_file and not st.session_state.processed:
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.font = default_font
         cell.border = thin_border
+        cell.fill = fill_header  #260420 셀 색깔 추가
 
     # ✅ 각 열별 ▣ 개수 세기 (물질 수), 비율 계산
     for idx in range(len(summary_titles)):
@@ -715,7 +916,8 @@ if uploaded_file and not st.session_state.processed:
     table3_end_row = table3_start_row + 2  # 표3은 총 3행
     table4_start_row = table3_end_row + 2  # 표3 끝 + 2줄 띄움
     #table4_start_col = 56  # BD열 = 56
-    table4_start_col = 67  # 0930 : BO열 = 67
+    #table4_start_col = 67  # 0930 : BO열 = 67
+    table4_start_col = 72  # 260419 : BT열 = 72
 
     # ----------------- 표4 열 제목 -----------------
     headers = ['중량(톤/년) 또는 부피단위(㎥/년)', '연간입고량', '연간사용·판매량']
@@ -726,6 +928,7 @@ if uploaded_file and not st.session_state.processed:
         cell.font = default_font
         cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         cell.border = thin_border
+        cell.fill = fill_header #260420 셀 색깔 추가
 
     # ----------------- 사용량 구분 값 및 범위 -----------------
     usage_levels = [str(i) for i in range(1, 11)]
@@ -804,6 +1007,7 @@ if uploaded_file and not st.session_state.processed:
         c_desc.font = default_font
         c_desc.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
         c_desc.border = thin_border
+        c_desc.fill = fill_label  # 260420 셀 색깔 추가
 
         # AZ: 연간입고량 카운트
         c_in = ws.cell(row=row, column=table4_start_col + 1)
