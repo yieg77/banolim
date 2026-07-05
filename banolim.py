@@ -874,7 +874,7 @@ if uploaded_file and not st.session_state.processed:
         '허가물질','사고대비물질','중점관리물질','위험물','독성가스',
         #------------------------------260630
         #'인체급성유해성물질', '인체만성유해성물질', #closed 260630
-        '유독물질2', '제한물질2', '금지물질2', '허가물질2', '사고대비물질2',
+        '인체등유해성물질', '제한물질2', '금지물질2', '허가물질2', '사고대비물질2',
         '중점관리물질2', '금지·허가물질2', '노출·허용기준물질2', '직업환경측정물질등2',
         '위험물2', '독성가스2'
     ]
@@ -1058,10 +1058,52 @@ if uploaded_file and not st.session_state.processed:
     
     # 표1의 두 열 값을 설명 문자열로 변환하여 시트에 반영
     def normalize_to_desc(v):
-        if v is None or (isinstance(v, float) and math.isnan(v)) or str(v).strip() == '':
+        if v is None or (isinstance(v, float) and math.isnan(v)):
             return None
-        key = v if isinstance(v, int) else str(v).strip()
-        return usage_map.get(key, None)
+
+        # 숫자 코드(예: 2, 2.0)를 우선 처리
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            if v in usage_map:
+                return usage_map[v]
+            try:
+                iv = int(v)
+                if iv in usage_map:
+                    return usage_map[iv]
+                s2 = str(iv)
+                if s2 in usage_map:
+                    return usage_map[s2]
+                s2z = s2.zfill(2)
+                if s2z in usage_map:
+                    return usage_map[s2z]
+            except Exception:
+                pass
+
+        raw = str(v).strip()
+        if raw == '':
+            return None
+
+        # 코드 문자열(예: "2", "02", "2.0") 처리
+        if raw in usage_map:
+            return usage_map[raw]
+        m_num = re.match(r'^\s*(\d+)(?:\.0+)?\s*$', raw)
+        if m_num:
+            iv = int(m_num.group(1))
+            if iv in usage_map:
+                return usage_map[iv]
+            s2 = str(iv)
+            if s2 in usage_map:
+                return usage_map[s2]
+            s2z = s2.zfill(2)
+            if s2z in usage_map:
+                return usage_map[s2z]
+
+        # 범위 문자열(예: "0.1 ~ 0.5", "0.1~0.5") 처리
+        norm = raw.replace(' ', '').replace('，', ',').replace('–', '-').replace('−', '-').replace('~', '~')
+        for desc in usage_descriptions:
+            if norm == desc.replace(' ', ''):
+                return desc
+
+        return None
 
     # ----------------- 개수 카운트 -----------------
     incoming_counter = Counter()
