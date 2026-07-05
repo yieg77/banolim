@@ -10,6 +10,8 @@ from io import BytesIO
 import re
 from openpyxl.styles import PatternFill  #20260420
 from openpyxl.styles.colors import Color #20260420
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Border, Side, Font, Alignment
 
 # ----------------- 고정 유해성 항목 순서 -----------------
 HAZARD_ORDER = [
@@ -22,15 +24,19 @@ HAZARD_ORDER = [
     '급성 수생환경 유해성', '만성 수생환경 유해성', '수생환경 유해성', #260419
     '폭발성 물질', '자기반응성 물질', '유기과산화물', '산화성 가스',
     '산화성 액체', '산화성 고체', '인화성 가스', '인화성 에어로졸',
-    '인화성 액체', '인화성 고체', '자연발화성 액체', '자연발화성 고체',
+    '인화성 액체', '인화성 고체', 
+    '인화성',  #260630
+    '자연발화성 액체', '자연발화성 고체',
     '물반응성 물질', '고압가스', '자기발열성 물질', '금속부식성 물질',
     'TWA', 'STEL', '증기압', '개정일',
     '관리대상유해물질', '특별관리물질', 
     '작업환경측정대상물질', #0930
     '특수건강진단대상물질',
-    '노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질', #0930
+    #'노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질', #0930, closed 260630
+    '노출기준설정물질','허용기준설정물질','금지물질','제한물질', # 260630
+    '인체급성유해성물질', '인체만성유해성물질', '생태유해성물질',# 260630
     '허가물질','사고대비물질','중점관리물질','위험물','독성가스', #0930
-    '인체급성유해성물질', '인체만성유해성물질',
+    #'인체급성유해성물질', '인체만성유해성물질', #closed 260630
     '[11번] 특정표적장기 독성(1회 노출)', '[11번] 특정표적장기 독성(반복 노출)'  #260419
 ]
 
@@ -39,6 +45,10 @@ HAZARD_ORDER = [
 # -------------------- 등급 판별 기준 --------------------
 CMR_GRADE_PRIORITY = {'1A': 0, '1B': 1, '2': 2}
 GRADE_PRIORITY = {'1': 0, '2': 1, '3': 2, '4': 3}
+#260701 폰트 정의
+default_font = Font(name='맑은 고딕', size=10, bold=False)
+bold_font    = Font(name='맑은 고딕', size=10, bold=True)
+#------------------------260701
 
 # ----------------- 취합 항목 정의 -----------------
 AGGREGATE_GROUPS = [
@@ -47,7 +57,16 @@ AGGREGATE_GROUPS = [
     ('피부/호흡기 과민성', ['호흡기 과민성', '피부 과민성']),
     ('특정표적장기 독성',  ['특정표적장기 독성(1회 노출)', '특정표적장기 독성(반복 노출)']),
     ('수생환경 유해성',    ['급성 수생환경 유해성', '만성 수생환경 유해성']),
+    ('인화성',    ['인화성 가스', '인화성 에어로졸', '인화성 액체', '인화성 고체']),  #260701
 ]
+
+#260630 -------------------- 색상 정의 --------------------
+fill_header = PatternFill(fill_type='solid', fgColor='FF5B9BD5')  # 제목행
+fill_label  = PatternFill(fill_type='solid', fgColor='FFDDEBF7')  # 라벨열
+fill_data1  = PatternFill(fill_type='solid', fgColor='FFFFFF00')  # 데이터셀1
+fill_data2  = PatternFill(fill_type='solid', fgColor='FFFFC000')  # 데이터셀2
+#------------------------260630
+
 
 # ----------------- CMR 등급 추출 함수 -----------------
 def extract_cmr_grades(val):
@@ -194,7 +213,7 @@ def query_revision_date(service_key, chem_id):
         return ''
     return ''
 
-# --- '관리대상유해물질', '특별관리물질', '특수건강진단대상물질', '인체급성유해성물질', '인체만성유해성물질' 조회 함수 ---
+# --- '관리대상유해물질', '특별관리물질', '특수건강진단대상물질', '인체급성유해성물질', '인체만성유해성물질', '생태유해성물질' 조회 함수 ---
 # 0930 수정
 def has_keyword(detail, keyword):
     """
@@ -225,7 +244,7 @@ def query_detail15(service_key, chem_id):
             '허용기준설정물질': False,
             '금지물질': False,
             '제한물질': False,
-            '유독물질': False,
+            #'유독물질': False,  # closed 260630
             '허가물질': False,
             '사고대비물질': False,
             '중점관리물질': False,
@@ -233,7 +252,8 @@ def query_detail15(service_key, chem_id):
             '독성가스': False,
             #--------------0930
             '인체급성유해성물질': False,
-            '인체만성유해성물질': False
+            '인체만성유해성물질': False,
+            '생태유해성물질': False, # 260630
         }
 
         for item in root.findall('.//item'):
@@ -246,8 +266,9 @@ def query_detail15(service_key, chem_id):
                     result['금지물질'] = True
                 if has_keyword(detail, '제한물질'):
                     result['제한물질'] = True
-                if has_keyword(detail, '유독물질'):
-                    result['유독물질'] = True
+                # closed 260630
+                #if has_keyword(detail, '유독물질'):
+                #    result['유독물질'] = True
                 if has_keyword(detail, '허가물질'):
                     result['허가물질'] = True
                 if has_keyword(detail, '사고대비물질'):
@@ -276,11 +297,15 @@ def query_detail15(service_key, chem_id):
                     result['허용기준설정물질'] = True
                 #-----------------------------------------0930
 
-            elif code in ['O04', 'O12']:  # 화학물질관리법 / 등록평가법
+            elif code in ['O04', 'O12']:  # 화학물질관리법 / 등록평가법               
                 if has_keyword(detail, '인체급성유해성물질'):
                     result['인체급성유해성물질'] = True
                 if has_keyword(detail, '인체만성유해성물질'):
                     result['인체만성유해성물질'] = True
+                # 260630 추가
+                if has_keyword(detail, '생태유해성물질'):
+                    result['생태유해성물질'] = True
+                #----------------------------------------
                     
         #print(f'detail15 result({chem_id})\n{result}')
 
@@ -298,7 +323,7 @@ def query_detail15(service_key, chem_id):
             '허용기준설정물질': False,
             '금지물질': False,
             '제한물질': False,
-            '유독물질': False,
+            #'유독물질': False,  # closed 260630
             '허가물질': False,
             '사고대비물질': False,
             '중점관리물질': False,
@@ -306,7 +331,8 @@ def query_detail15(service_key, chem_id):
             '독성가스': False,
             #-------------0930
             '인체급성유해성물질': False,
-            '인체만성유해성물질': False            
+            '인체만성유해성물질': False,
+            '생태유해성물질': False, # 260630         
         }
         
 ###260419 [11번] 특정표적장기 독성(1회 노출), [11번] 특정표적장기 독성(반복 노출) 추가
@@ -433,7 +459,7 @@ def query_cas_info(data_rows, service_key):
                         result['CMR'] = highest_grade
                         
                     # 260419
-                    # 일반 취합 (5개 항목 일괄 처리)
+                    # 일반 취합 (5개 항목 일괄 처리) -> 6개 (260701)
                     for agg_col, source_keys in AGGREGATE_GROUPS:
                         grade = compute_aggregate_grade(result, source_keys)
                         if grade:
@@ -455,6 +481,10 @@ def query_cas_info(data_rows, service_key):
                     result['인체급성유해성물질'] = '▣'
                 if res_detail15['인체만성유해성물질'] :
                     result['인체만성유해성물질'] = '▣'
+                #260630추가
+                if res_detail15['생태유해성물질'] :
+                    result['생태유해성물질'] = '▣'
+                #--------------------260630
                 #0930--------------------------------
                 if res_detail15['작업환경측정대상물질'] :
                     result['작업환경측정대상물질'] = '▣'
@@ -466,8 +496,9 @@ def query_cas_info(data_rows, service_key):
                     result['금지물질'] = '▣'
                 if res_detail15['제한물질'] :
                     result['제한물질'] = '▣'
-                if res_detail15['유독물질'] :
-                    result['유독물질'] = '▣'
+                # closed 260630
+                #if res_detail15['유독물질'] :
+                #    result['유독물질'] = '▣'
                 if res_detail15['허가물질'] :
                     result['허가물질'] = '▣'
                 if res_detail15['사고대비물질'] :
@@ -503,7 +534,7 @@ def query_cas_info(data_rows, service_key):
 import os
 
 st.set_page_config(page_title="화학물질 유해성 정보 수집기", layout="wide")
-st.title("📋 화학물질 유해성 정보 수집기 v.260420")
+st.title("📋 화학물질 유해성 정보 수집기 v1.260705")
 
 SERVICE_KEY = 'MJFEGDzjkGr4Rg4pQtOxcYT%2BxteNCe0HuK0PUWKt%2B4hZHqYk%2BpNIf3RwocbhI1twsbNknwMur9m0fcPZir9jyg%3D%3D'
 
@@ -534,7 +565,8 @@ if uploaded_file and not st.session_state.processed:
 
     #header_row = header_row_full[:45]  # ✅ A열~AS열(1~45열)만 제목행 검사
     #header_row = header_row_full[:56]  # 0930 : A열~BD열(1~56열)만 제목행 검사
-    header_row = header_row_full[:61]  # 260419 : A열~BI열(1~61열)만 제목행 검사
+    #header_row = header_row_full[:61]  # 260419 : A열~BI열(1~61열)만 제목행 검사 closed 260630
+    header_row = header_row_full[:62] #260630 : A열~BJ열(1~62열)만 제목행 검사 (독성가스(BJ)까지)
     current_headers = set(header_row)
     print('[current_headers]\n', current_headers)
     #expected_headers = set(HAZARD_ORDER) #closed 260419
@@ -580,6 +612,18 @@ if uploaded_file and not st.session_state.processed:
 
     # ✅ 컬럼명 → 엑셀 열 인덱스 매핑
     col_name_to_idx = {cell.value: idx for idx, cell in enumerate(ws[1], start=1)}
+    
+    # 260630 1행 제목행 셀 색깔
+    for row in ws['A1:BY1']:
+        for cell in row:
+            cell.fill = fill_header
+            cell.font = default_font  #260701
+            #260701 굵은 글씨 -----------------            
+            if cell.value in ['발암성','생식독성','CMR','급성독성','피부/눈 자극성','특정표적장기 독성','수생환경 유해성','인화성','연간사용·판매량']:
+                cell.font = bold_font
+            #-----------------260701
+    #==========================
+
 
     # ✅ 결과 입력 + 셀 정렬 설정
     for r_idx, row in hazard_df.iterrows():
@@ -589,14 +633,31 @@ if uploaded_file and not st.session_state.processed:
                 col_idx = col_name_to_idx[col_name]
                 cell = ws.cell(row=excel_row, column=col_idx)
                 cell.value = row.get(col_name, '')
+                col_letter = get_column_letter(col_idx) #260630
+                                
+                #260630 셀 색깔 ================
+                if col_letter in ['A', 'B', 'C']:
+                    cell.fill = fill_label
+                #유독물질2부터  
+                elif col_letter in ['BK', 'BL', 'BM', 'BN', 'BO', 'BP', 'BQ', 'BR', 'BS', 'BT', 'BU', 'BV','BW']:
+                    cell.fill = fill_data2  
+                else :
+                    cell.fill = fill_data1
+                #=========================260630
                 
                 # 셀 정렬: CAS No. 등은 가운데 정렬, 그 외는 위쪽 정렬
                 if col_name in ['#', 'CAS No.', '결과없음', '개정일',
                                 '관리대상유해물질', '특별관리물질', '특수건강진단대상물질', '인체급성유해성물질', '인체만성유해성물질',
+                                '생태유해성물질', #260630
                                 #0930---------------------------
-                                '작업환경측정대상물질', '노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질',
-                                '허가물질','사고대비물질','중점관리물질','위험물','독성가스']:
+                                #closed 260630
+                                #'작업환경측정대상물질', '노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질',
+                                #'허가물질','사고대비물질','중점관리물질','위험물','독성가스']:
                                 #---------------------------0930
+                                #260630---------------------------
+                                '작업환경측정대상물질', '노출기준설정물질','허용기준설정물질','금지물질','제한물질',
+                                '허가물질','사고대비물질','중점관리물질','위험물','독성가스']:
+                                #---------------------------260630
                     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
                 else:
                     #260419
@@ -611,8 +672,6 @@ if uploaded_file and not st.session_state.processed:
     #=========================================================================#
     # 표2 생성
     #=========================================================================#
-    from openpyxl.utils import get_column_letter
-    from openpyxl.styles import Border, Side, Font, Alignment
     import math
     import re
 
@@ -623,13 +682,13 @@ if uploaded_file and not st.session_state.processed:
         top=Side(style='thin'),
         bottom=Side(style='thin')
     )
-    default_font = Font(name='Noto Sans KR', size=10)
+    #default_font = Font(name='Noto Sans KR', size=10)  # closed 260701
 
     #260420 -------------------- 색상 정의 --------------------
-    fill_header = PatternFill(fill_type='solid', fgColor=Color(theme=8, tint=0.3999755851924192))  # 제목행
-    fill_label  = PatternFill(fill_type='solid', fgColor=Color(theme=4, tint=0.7999816888943144))  # 라벨열
+    #fill_header = PatternFill(fill_type='solid', fgColor=Color(theme=8, tint=0.3999755851924192))  # 제목행
+    #fill_label  = PatternFill(fill_type='solid', fgColor=Color(theme=4, tint=0.7999816888943144))  # 라벨열
     #------------------------260420
-
+    
     # -------------------- 등급 판별 기준 --------------------
     #grade_to_label = {'1': '구분1', '1A': '1A', '1B': '1B', '2': '구분2', '3': '구분3', '4': '구분4'}
     #grade_priority = {'1': 0, '1A': 1, '1B': 2, '2': 3, '3': 4, '4': 5}
@@ -652,7 +711,12 @@ if uploaded_file and not st.session_state.processed:
 
     # -------------------- 기본 정보 --------------------
     #hazard_cols = HAZARD_ORDER[4:-9]
-    hazard_cols = HAZARD_ORDER[4:-20]  # 0930 발암성~금속부식성물질
+    #hazard_cols = HAZARD_ORDER[4:-20]  # 0930 발암성~금속부식성물질
+    # 260630 발암성~금속부식성물질 (유독물질 제거)
+    start_idx = HAZARD_ORDER.index('발암성')
+    end_idx = HAZARD_ORDER.index('금속부식성 물질') + 1
+    hazard_cols = HAZARD_ORDER[start_idx:end_idx]
+    #=====================260630
     hazard_start_col = 4  # D열 = openpyxl 기준 1-based
     start_row = 2
     end_row = start_row + len(hazard_df) - 1
@@ -673,6 +737,11 @@ if uploaded_file and not st.session_state.processed:
         cell.font = default_font
         cell.border = thin_border
         cell.fill = fill_header  #260420 셀 색깔
+        
+        #260701 굵은 글씨 -----------------
+        if col_name in ['발암성','생식독성','CMR','급성독성','피부/눈 자극성','특정표적장기 독성','수생환경 유해성','인화성','연간사용·판매량']:
+            cell.font = bold_font
+        #-----------------260701
 
     # -------------------- 라벨 --------------------
     row_labels = [
@@ -794,10 +863,17 @@ if uploaded_file and not st.session_state.processed:
         '작업환경측정대상물질', #0930    
         '특수건강진단대상물질',
         #0930------------------------------
-        '노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질',
-        '허가물질','사고대비물질','중점관리물질','위험물','독성가스',
+        #closed 260630
+        #'노출기준설정물질','허용기준설정물질','금지물질','제한물질','유독물질',
+        #'허가물질','사고대비물질','중점관리물질','위험물','독성가스',
         #------------------------------0930
-        '인체급성유해성물질', '인체만성유해성물질', 
+
+        #260630------------------------------
+        '노출기준설정물질','허용기준설정물질','금지물질','제한물질',
+        '인체급성유해성물질', '인체만성유해성물질', '생태유해성물질',
+        '허가물질','사고대비물질','중점관리물질','위험물','독성가스',
+        #------------------------------260630
+        #'인체급성유해성물질', '인체만성유해성물질', #closed 260630
         '유독물질2', '제한물질2', '금지물질2', '허가물질2', '사고대비물질2',
         '중점관리물질2', '금지·허가물질2', '노출·허용기준물질2', '직업환경측정물질등2',
         '위험물2', '독성가스2'
@@ -805,7 +881,8 @@ if uploaded_file and not st.session_state.processed:
     
     # 표3의 컬럼 인덱스 (엑셀 기준 41~58)
     #summary_start_col = 41
-    summary_start_col = 46 #260419
+    #summary_start_col = 46 #260419 #closed 260630
+    summary_start_col = 47 #260630 '개정일' 열 자리
     summary_end_col = summary_start_col + len(summary_titles) - 1
 
     # 전체 물질 수 (결과없음이 '공단 MSDS 없음'이 아닌 것들)
@@ -917,7 +994,8 @@ if uploaded_file and not st.session_state.processed:
     table4_start_row = table3_end_row + 2  # 표3 끝 + 2줄 띄움
     #table4_start_col = 56  # BD열 = 56
     #table4_start_col = 67  # 0930 : BO열 = 67
-    table4_start_col = 72  # 260419 : BT열 = 72
+    #table4_start_col = 72  # 260419 : BT열 = 72 #closed 260630
+    table4_start_col = 73  # 260630 : BU열 = 73 (독성가스2 열 자리)
 
     # ----------------- 표4 열 제목 -----------------
     headers = ['중량(톤/년) 또는 부피단위(㎥/년)', '연간입고량', '연간사용·판매량']
